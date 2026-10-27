@@ -49,7 +49,7 @@ def clean_html(raw_html: str) -> str:
     return "\n".join(lines)
 
 
-def extract_credentials_from_curls(file_path: str = "/root/onluyen/curls.txt") -> Tuple[Optional[str], Optional[str]]:
+def get_credentials(file_path: str = "/root/onluyen/curls.txt") -> Tuple[Optional[str], Optional[str]]:
     """Tự động trích xuất username và password từ file curls.txt."""
     if not os.path.exists(file_path):
         return None, None
