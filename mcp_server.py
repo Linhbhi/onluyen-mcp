@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-=============================================================================
-ONLUYEN MCP SERVER V2.0 FOR ANTIGRAVITY (HIGH-PERFORMANCE UPGRADE)
-=============================================================================
-Cung cấp các công cụ native MCP tối ưu tốc độ:
-  1. onluyen_login: Tự động đăng nhập onluyen.vn (tự nạp từ curls.txt)
-  2. onluyen_list_assignments: Danh sách bài tập (hỗ trợ lọc 'todo', 'done', 'all')
-  3. onluyen_get_test: Tải đề thi định dạng compact siêu gọn (chống tràn byte, 0 cắt bớt)
-  4. onluyen_save_answers: Lưu đáp án siêu tốc bằng quick_answers {'1': 'A', '2': 'B'}
-  5. onluyen_submit_test: Nộp bài có auto-wait 3 phút an toàn
-  6. onluyen_get_result: Xem điểm, số câu đúng/sai và lời giải chi tiết
-=============================================================================
+Onluyen MCP Server
+Cung cấp MCP tools tương tác với hệ thống onluyen.vn:
+  1. onluyen_login: Đăng nhập tài khoản
+  2. onluyen_list_assignments: Lấy danh sách bài tập được giao
+  3. onluyen_get_test: Tải câu hỏi và đề bài (định dạng compact hoặc full)
+  4. onluyen_save_answers: Lưu đáp án (hỗ trợ quick_answers theo số thứ tự)
+  5. onluyen_submit_test: Nộp bài kiểm tra (tự kiểm tra thời gian làm bài)
+  6. onluyen_get_result: Lấy điểm số, kết quả chi tiết và lời giải
 """
 
 import sys
@@ -75,7 +72,7 @@ def extract_credentials_from_curls(file_path: str = "/root/onluyen/curls.txt") -
 
 
 class OnluyenManager:
-    """Quản lý kết nối, bộ nhớ đệm và phiên làm việc với onluyen.vn tối ưu tốc độ."""
+    """Quản lý kết nối, bộ nhớ đệm và phiên làm việc với onluyen.vn."""
 
     LOGIN_URL = "https://oauth.onluyen.vn/api/account/login"
     BASE_API = "https://api-elb.onluyen.vn/api"
@@ -353,7 +350,7 @@ class OnluyenManager:
             "questions": parsed
         }
 
-        # 3. Tạo định dạng compact siêu gọn cho AI
+        # 3. Tạo định dạng compact gọn nhẹ
         compact_questions = []
         for q in parsed:
             c_item = {
@@ -694,7 +691,7 @@ TOOLS = [
     },
     {
         "name": "onluyen_get_test",
-        "description": "Tải đề thi và câu hỏi của bài tập. Mặc định trả về định dạng compact siêu nhẹ (giúp AI đọc toàn bộ đề ngay lập tức trong 1 lượt, không bị cắt bớt dữ liệu).",
+        "description": "Tải đề bài và danh sách câu hỏi. Hỗ trợ định dạng compact (loại bỏ HTML thừa) hoặc full.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -711,7 +708,7 @@ TOOLS = [
     },
     {
         "name": "onluyen_save_answers",
-        "description": "Lưu đáp án lên hệ thống Onluyen (AWS S3). Cực nhanh: hỗ trợ truyền quick_answers bằng số thứ tự câu hỏi và chữ cái (ví dụ: {'1': 'A', '2': 'B', '21': ['Đ', 'S', 'Đ', 'S']}) mà không cần tự tra cứu stepId hay idOption.",
+        "description": "Lưu đáp án lên hệ thống Onluyen. Hỗ trợ truyền quick_answers theo số thứ tự câu (ví dụ: {'1': 'A', '2': 'B', '21': ['Đ', 'S', 'Đ', 'S']}).",
         "inputSchema": {
             "type": "object",
             "properties": {
