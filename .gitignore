@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+curls.txt
+venv/
+.venv/
+.DS_Store
+*.log
+result_*.json

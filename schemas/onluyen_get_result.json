@@ -1,0 +1,1 @@
+{"name":"onluyen_get_result","description":"Lấy kết quả chi tiết của bài tập sau khi nộp (điểm số, số câu đúng/sai, đáp án đúng và lời giải của giáo viên).","parameters":{"properties":{"assign_id":{"description":"Mã bài tập","type":"string"}},"required":["assign_id"],"type":"object"}}

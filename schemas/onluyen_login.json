@@ -1,0 +1,1 @@
+{"name":"onluyen_login","description":"Đăng nhập vào tài khoản Onluyen.vn bằng email/số điện thoại và mật khẩu.","parameters":{"properties":{"password":{"description":"Mật khẩu","type":"string"},"username":{"description":"Email hoặc SĐT đăng nhập","type":"string"}},"required":["username","password"],"type":"object"}}
