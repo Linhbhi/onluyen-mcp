@@ -17,6 +17,7 @@ import re
 import json
 import time
 import base64
+import hashlib
 import requests
 from typing import Dict, List, Any, Optional, Tuple
 
@@ -36,12 +37,42 @@ DEFAULT_USER_AGENT = (
 )
 
 
+def _process_img_tag(match: re.Match) -> str:
+    """Xử lý thẻ img, lưu ảnh base64 dung lượng lớn vào /tmp/onluyen_img để tránh phình to prompt AI."""
+    src = match.group(1).strip()
+    if src.startswith("data:image"):
+        try:
+            parts = src.split(",", 1)
+            if len(parts) == 2:
+                header, b64data = parts
+                ext = "png"
+                if "image/jpeg" in header or "image/jpg" in header:
+                    ext = "jpg"
+                elif "image/webp" in header:
+                    ext = "webp"
+                elif "image/gif" in header:
+                    ext = "gif"
+
+                raw_bytes = base64.b64decode(b64data)
+                h = hashlib.md5(raw_bytes).hexdigest()[:12]
+                cache_dir = "/tmp/onluyen_img"
+                os.makedirs(cache_dir, exist_ok=True)
+                img_path = os.path.join(cache_dir, f"{h}.{ext}")
+                if not os.path.exists(img_path):
+                    with open(img_path, "wb") as f:
+                        f.write(raw_bytes)
+                return f" ![Hình ảnh]({img_path}) "
+        except Exception:
+            return " ![Hình ảnh] "
+    return f" ![Hình ảnh]({src}) "
+
+
 def clean_html(raw_html: str) -> str:
     """Loại bỏ thẻ HTML thừa, bảo toàn hình ảnh sang Markdown và giữ định dạng đoạn văn."""
     if not raw_html:
         return ""
     # Chuyển đổi thẻ ảnh sang Markdown để không làm mất sơ đồ/hình ảnh bài toán
-    raw_html = re.sub(r'<img[^>]+src=["\']([^"\']+)["\'][^>]*>', r' ![Hình ảnh](\1) ', raw_html)
+    raw_html = re.sub(r'<img[^>]+src=["\']([^"\']+)["\'][^>]*>', _process_img_tag, raw_html)
     # Giữ định dạng xuống dòng từ <br>, <p>
     raw_html = re.sub(r'<br\s*/?>', '\n', raw_html, flags=re.IGNORECASE)
     raw_html = re.sub(r'</p>', '\n', raw_html, flags=re.IGNORECASE)
@@ -143,11 +174,103 @@ class OnluyenManager:
         })
         self.ensure_login()
 
+    def _get_cache_path(self) -> str:
+        cache_dir = os.path.expanduser("~/.cache/onluyen")
+        os.makedirs(cache_dir, exist_ok=True)
+        return os.path.join(cache_dir, "session.json")
+
+    def _apply_headers(self):
+        self.session.headers.update({
+            "authorization": f"Bearer {self.token}",
+            "code-app": self.code_app,
+            "school-id": self.school_id,
+            "school-year": self.school_year,
+            "user-id": self.user_id,
+            "user-name": self.username,
+            "content-type": "application/json"
+        })
+
+    def _save_session_cache(self, session_data: Dict[str, Any]):
+        try:
+            cache_file = self._get_cache_path()
+            with open(cache_file, "w", encoding="utf-8") as f:
+                json.dump(session_data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def _load_session_cache(self, username: str = "") -> bool:
+        cache_file = self._get_cache_path()
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, "r", encoding="utf-8") as f:
+                    cdata = json.load(f)
+                token = cdata.get("token")
+                c_user = cdata.get("username", "")
+                if token and (not username or c_user == username):
+                    payload_part = token.split(".")[1]
+                    payload_part += "=" * ((4 - len(payload_part) % 4) % 4)
+                    jwt_data = json.loads(base64.b64decode(payload_part).decode("utf-8"))
+                    exp = jwt_data.get("exp", 0)
+                    if exp > time.time() + 300:
+                        self.token = token
+                        self.username = c_user
+                        self.user_id = cdata.get("userId", "")
+                        self.display_name = cdata.get("displayName", "")
+                        self.school_id = cdata.get("schoolId", self.school_id)
+                        self.school_year = cdata.get("schoolYear", self.school_year)
+                        self.code_app = cdata.get("codeApp", self.code_app)
+                        self._apply_headers()
+                        return True
+            except Exception:
+                pass
+
+        # Fallback từ curls.txt nếu có token còn hạn
+        candidate_curl_paths = [
+            "/root/onluyen/curls.txt",
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "curls.txt"),
+            os.path.join(os.getcwd(), "curls.txt")
+        ]
+        for cpath in candidate_curl_paths:
+            if os.path.exists(cpath):
+                try:
+                    with open(cpath, "r", encoding="utf-8", errors="ignore") as f:
+                        c_text = f.read()
+                    m = re.search(r'Bearer\s+([A-Za-z0-9\-_=]+\.[A-Za-z0-9\-_=]+\.[A-Za-z0-9\-_=]+)', c_text)
+                    if m:
+                        token = m.group(1)
+                        payload_part = token.split(".")[1]
+                        payload_part += "=" * ((4 - len(payload_part) % 4) % 4)
+                        jwt_data = json.loads(base64.b64decode(payload_part).decode("utf-8"))
+                        exp = jwt_data.get("exp", 0)
+                        if exp > time.time() + 300:
+                            self.token = token
+                            self.username = username or jwt_data.get("sub", "")
+                            self.user_id = str(jwt_data.get("userId", ""))
+                            self.school_id = str(jwt_data.get("CreateBySchool", self.school_id))
+                            self.school_year = str(jwt_data.get("SchoolYear", self.school_year))
+                            self.code_app = str(jwt_data.get("codeApp", self.code_app))
+                            self._apply_headers()
+                            self._save_session_cache({
+                                "username": self.username,
+                                "token": self.token,
+                                "userId": self.user_id,
+                                "displayName": self.display_name,
+                                "schoolId": self.school_id,
+                                "schoolYear": self.school_year,
+                                "codeApp": self.code_app
+                            })
+                            return True
+                except Exception:
+                    pass
+        return False
+
     def ensure_login(self) -> bool:
-        """Đảm bảo luôn đăng nhập hợp lệ, tự động đọc tài khoản từ ENV/.env/curls.txt nếu cần."""
+        """Đảm bảo luôn đăng nhập hợp lệ, tự động nạp session cache hoặc đăng nhập lại."""
         if self.token:
             return True
         u, p = get_credentials()
+        if u and self._load_session_cache(u):
+            return True
         if u and p:
             res = self.login(u, p)
             return res.get("success", False)
@@ -180,6 +303,12 @@ class OnluyenManager:
             if resp.status_code != 200:
                 return {"success": False, "error": f"HTTP {resp.status_code}: {resp.text}"}
             data = resp.json()
+            if not data.get("access_token"):
+                err_msg = data.get("message") or f"Đăng nhập thất bại (HTTP {resp.status_code})"
+                if data.get("status") == 429:
+                    err_msg = f"Onluyen Rate Limit (429): {data.get('message', 'Quá nhiều yêu cầu đăng nhập, vui lòng đợi 1-2 phút')}"
+                return {"success": False, "error": err_msg}
+
             self.token = data.get("access_token", "")
             self.user_id = data.get("userId", "")
             self.display_name = data.get("display_name", "")
@@ -194,15 +323,17 @@ class OnluyenManager:
             except Exception:
                 pass
 
-            self.session.headers.update({
-                "authorization": f"Bearer {self.token}",
-                "code-app": self.code_app,
-                "school-id": self.school_id,
-                "school-year": self.school_year,
-                "user-id": self.user_id,
-                "user-name": self.username,
-                "content-type": "application/json"
+            self._apply_headers()
+            self._save_session_cache({
+                "username": self.username,
+                "token": self.token,
+                "userId": self.user_id,
+                "displayName": self.display_name,
+                "schoolId": self.school_id,
+                "schoolYear": self.school_year,
+                "codeApp": self.code_app
             })
+
             return {
                 "success": True,
                 "displayName": self.display_name,
@@ -284,14 +415,25 @@ class OnluyenManager:
             # Bài đang làm -> tải từ doing API
             doing_url = f"{self.BASE_API}/school-online/assignment/doing/{assign_id}"
             doing_resp = self._request("GET", doing_url, timeout=20)
-            if doing_resp.status_code != 200:
-                raise Exception(f"Failed to fetch doing data: HTTP {doing_resp.status_code} - {doing_resp.text}")
+            if doing_resp.status_code == 200:
+                doing_data = doing_resp.json().get("data", {})
+                if isinstance(doing_data, dict):
+                    questions_raw = doing_data.get("data", []) or []
+                    presigned_put_url = doing_data.get("preSignedUrlAnswer", "")
+                    answer_premade_url = doing_data.get("answerUrlPremade", "")
+                    start_time = doing_data.get("startTime") or start_time
 
-            doing_data = doing_resp.json().get("data", {})
-            questions_raw = doing_data.get("data", [])
-            presigned_put_url = doing_data.get("preSignedUrlAnswer", "")
-            answer_premade_url = doing_data.get("answerUrlPremade", "")
-            start_time = doing_data.get("startTime") or start_time
+            # Fallback nếu doing không có câu hỏi (ví dụ bài đã hoàn thành hoặc lỗi endpoint)
+            if not questions_raw:
+                detail_url = f"{self.BASE_API}/school-online/assignment/detail/{assign_id}"
+                detail_resp = self._request("GET", detail_url, timeout=20)
+                if detail_resp.status_code == 200:
+                    d_json = detail_resp.json().get("data", {})
+                    if isinstance(d_json, dict):
+                        questions_raw = d_json.get("data", []) or []
+
+            if not questions_raw and doing_resp.status_code != 200:
+                raise Exception(f"Failed to fetch doing data: HTTP {doing_resp.status_code} - {doing_resp.text}")
 
             if presigned_put_url:
                 self.presigned_put_urls[assign_id] = presigned_put_url
@@ -528,6 +670,14 @@ class OnluyenManager:
         auto_submit: bool = False
     ) -> Dict[str, Any]:
         """Lưu danh sách đáp án lên AWS S3. Tự động chuyển đổi quick_answers và nộp bài nếu auto_submit=True."""
+        info = self.get_assignment_info(assign_id)
+        if info and info.get("status") in (2, 3):
+            return {
+                "success": False,
+                "error": "ALREADY_SUBMITTED",
+                "message": "Bài tập này đã được nộp và hoàn thành từ trước, không thể lưu thêm đáp án."
+            }
+
         normalized_answers = self._normalize_answers(assign_id, answers, quick_answers)
 
         # 1. Lấy presigned PUT URL
@@ -536,7 +686,14 @@ class OnluyenManager:
             doing_url = f"{self.BASE_API}/school-online/assignment/doing/{assign_id}"
             doing_resp = self._request("GET", doing_url, timeout=20)
             if doing_resp.status_code == 200:
-                put_url = doing_resp.json().get("data", {}).get("preSignedUrlAnswer")
+                doing_json = doing_resp.json()
+                if not doing_json.get("success", False) and doing_json.get("message") == "Bài tập đã hoàn thành":
+                    return {
+                        "success": False,
+                        "error": "ALREADY_SUBMITTED",
+                        "message": "Bài tập này đã hoàn thành trên Onluyen, không thể lưu đáp án mới."
+                    }
+                put_url = doing_json.get("data", {}).get("preSignedUrlAnswer")
                 if put_url:
                     self.presigned_put_urls[assign_id] = put_url
 
@@ -590,6 +747,15 @@ class OnluyenManager:
     def submit_assignment(self, assign_id: str, force: bool = False, auto_wait: bool = True) -> Dict[str, Any]:
         """Gửi yêu cầu nộp bài chính thức (kiểm tra cooldown 3 phút)."""
         info = self.get_assignment_info(assign_id)
+        if info and info.get("status") in (2, 3):
+            result = self.get_result_detail(assign_id)
+            return {
+                "success": True,
+                "message": "Bài tập đã được nộp từ trước.",
+                "alreadySubmitted": True,
+                "result": result
+            }
+
         start_time = int(info.get("startTime") or 0) if info else 0
         now = int(time.time())
         required = 180
@@ -616,7 +782,7 @@ class OnluyenManager:
                 "error": "SUBMIT_TOO_FAST",
                 "message": "Hệ thống thông báo: Nộp bài nhanh quá bạn ơi! Cần tối thiểu 3 phút."
             }
-        if resp.status_code == 200 and data.get("success", False):
+        if (resp.status_code == 200 and data.get("success", False)) or data.get("status") in (2, 3) or "hoàn thành" in str(data.get("message", "")).lower():
             time.sleep(1)
             result = self.get_result_detail(assign_id)
             return {
@@ -626,7 +792,7 @@ class OnluyenManager:
             }
         return {
             "success": False,
-            "error": data.get("message", f"HTTP {resp.status_code}")
+            "error": data.get("message") or f"HTTP {resp.status_code}"
         }
 
     def get_result_detail(self, assign_id: str) -> Optional[Dict[str, Any]]:
