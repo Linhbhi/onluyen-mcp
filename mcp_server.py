@@ -20,6 +20,16 @@ import base64
 import requests
 from typing import Dict, List, Any, Optional, Tuple
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    _script_dir = os.path.dirname(os.path.abspath(__file__))
+    _env_path = os.path.join(_script_dir, ".env")
+    if os.path.exists(_env_path):
+        load_dotenv(_env_path)
+except ImportError:
+    pass
+
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/127.0.0.0 Mobile Safari/537.36"
@@ -49,25 +59,61 @@ def clean_html(raw_html: str) -> str:
     return "\n".join(lines)
 
 
-def get_credentials(file_path: str = "/root/onluyen/curls.txt") -> Tuple[Optional[str], Optional[str]]:
-    """Tự động trích xuất username và password từ file curls.txt."""
-    if not os.path.exists(file_path):
-        return None, None
-    try:
-        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-            content = f.read()
-        match = re.search(r'--data-raw\s+[\'"](\{.*?"password":.*?\})[\'"]', content)
-        if match:
-            data = json.loads(match.group(1))
-            username = data.get("userName") or data.get("phoneNumber")
-            password = data.get("password")
-            return username, password
-        u_match = re.search(r'["\']userName["\']\s*:\s*["\']([^"\']+)["\']', content)
-        p_match = re.search(r'["\']password["\']\s*:\s*["\']([^"\']+)["\']', content)
-        if u_match and p_match:
-            return u_match.group(1), p_match.group(1)
-    except Exception:
-        pass
+def get_credentials() -> Tuple[Optional[str], Optional[str]]:
+    """
+    Lấy thông tin đăng nhập theo thứ tự ưu tiên:
+      1. Biến môi trường (os.environ: ONLUYEN_USERNAME, ONLUYEN_PASSWORD)
+      2. File .env (trong thư mục chứa script hoặc working directory)
+      3. File curls.txt (fallback tương thích ngược)
+    """
+    # 1. Biến môi trường (hoặc từ dotenv đã nạp)
+    env_u = os.environ.get("ONLUYEN_USERNAME")
+    env_p = os.environ.get("ONLUYEN_PASSWORD")
+    if env_u and env_p:
+        return env_u.strip(), env_p.strip()
+
+    # 2. Tìm và đọc thủ công file .env (phòng trường hợp python-dotenv chưa cài đặt)
+    candidate_env_paths = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"),
+        os.path.join(os.getcwd(), ".env"),
+    ]
+    for env_path in candidate_env_paths:
+        if os.path.exists(env_path):
+            try:
+                with open(env_path, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+                m_u = re.search(r"^\s*ONLUYEN_USERNAME\s*=\s*['\"]?([^'\"\r\n]+)['\"]?", content, re.MULTILINE)
+                m_p = re.search(r"^\s*ONLUYEN_PASSWORD\s*=\s*['\"]?([^'\"\r\n]+)['\"]?", content, re.MULTILINE)
+                if m_u and m_p:
+                    return m_u.group(1).strip(), m_p.group(1).strip()
+            except Exception:
+                pass
+
+    # 3. Fallback đọc từ file curls.txt (nếu có trên máy phát triển cũ)
+    candidate_curl_paths = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "curls.txt"),
+        os.path.join(os.getcwd(), "curls.txt"),
+        "/root/onluyen/curls.txt"
+    ]
+    for curl_path in candidate_curl_paths:
+        if os.path.exists(curl_path):
+            try:
+                with open(curl_path, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+                match = re.search(r'--data-raw\s+[\'"](\{.*?"password":.*?\})[\'"]', content)
+                if match:
+                    data = json.loads(match.group(1))
+                    username = data.get("userName") or data.get("phoneNumber")
+                    password = data.get("password")
+                    if username and password:
+                        return str(username).strip(), str(password).strip()
+                u_match = re.search(r'["\']userName["\']\s*:\s*["\']([^"\']+)["\']', content)
+                p_match = re.search(r'["\']password["\']\s*:\s*["\']([^"\']+)["\']', content)
+                if u_match and p_match:
+                    return u_match.group(1).strip(), p_match.group(1).strip()
+            except Exception:
+                pass
+
     return None, None
 
 
@@ -83,9 +129,9 @@ class OnluyenManager:
         self.token = ""
         self.user_id = ""
         self.display_name = ""
-        self.school_id = "648"
-        self.school_year = "2026"
-        self.code_app = "SCHOOL"
+        self.school_id = os.environ.get("ONLUYEN_SCHOOL_ID", "648")
+        self.school_year = os.environ.get("ONLUYEN_SCHOOL_YEAR", "2026")
+        self.code_app = os.environ.get("ONLUYEN_CODE_APP", "SCHOOL")
         self.presigned_put_urls: Dict[str, str] = {}
         self.test_cache: Dict[str, Dict[str, Any]] = {}
         self.session = requests.Session()
@@ -98,7 +144,7 @@ class OnluyenManager:
         self.ensure_login()
 
     def ensure_login(self) -> bool:
-        """Đảm bảo luôn đăng nhập hợp lệ, tự động đọc tài khoản từ curls.txt nếu cần."""
+        """Đảm bảo luôn đăng nhập hợp lệ, tự động đọc tài khoản từ ENV/.env/curls.txt nếu cần."""
         if self.token:
             return True
         u, p = get_credentials()
